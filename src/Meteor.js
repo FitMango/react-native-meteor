@@ -25,6 +25,10 @@ import ReactiveDict from './ReactiveDict';
 import User from './user/User';
 import Accounts from './user/Accounts';
 
+/* BEGIN OPTIMISTIC-UI EDITS */
+import _ from 'underscore';
+/* END OPTIMISTIC-UI EDITS */
+
 
 module.exports = {
   composeWithTracker,
@@ -88,6 +92,11 @@ module.exports = {
       ...options
     });
 
+    /* BEGIN OPTIMISTIC-UI EDITS */
+    this.ddp.expectedUpdates = {};
+    this.ddp.expectedUpdatesByCallId = {};
+    /* END OPTIMISTIC-UI EDITS */
+
     NetInfo.isConnected.addEventListener('change', isConnected=>{
       if(isConnected && Data.ddp.autoReconnect) {
         Data.ddp.connect();
@@ -147,6 +156,22 @@ module.exports = {
     });
 
     Data.ddp.on("changed", message => {
+      /* BEGIN OPTIMISTIC-UI EDITS */
+      const key = message.collection + "_" + message.id;
+      if (key in Data.ddp.expectedUpdates) {
+        for (let callId in Data.ddp.expectedUpdates[key]) {
+          if (
+            Data.ddp.expectedUpdates[key][callId].callReturned === true &&
+            _.isEqual(
+              message.fields,
+              Data.ddp.expectedUpdates[key][callId].expectedFields
+            )
+          ) {
+            return;
+          }
+        }
+      }
+      /* END OPTIMISTIC-UI EDITS */
       Data.db[message.collection] && Data.db[message.collection].upsert({_id: message.id, ...message.fields});
     });
 
@@ -157,7 +182,26 @@ module.exports = {
       const call = Data.calls.find(call=>call.id==message.id);
       if(typeof call.callback == 'function') call.callback(message.error, message.result);
       Data.calls.splice(Data.calls.findIndex(call=>call.id==message.id), 1);
+      /* BEGIN OPTIMISTIC-UI EDITS */
+      Data.ddp.expectedUpdatesByCallId[message.id] &&
+      Data.ddp.expectedUpdatesByCallId[message.id].forEach(key => {
+        Data.ddp.expectedUpdates[key][message.id].callReturned = true;
+      });
+      /* END OPTIMISTIC-UI EDITS */
     });
+
+    /* BEGIN OPTIMISTIC-UI EDITS */
+    Data.ddp.on("updated", message => {
+      message.methods.forEach(callId => {
+        if (callId in Data.ddp.expectedUpdatesByCallId) {
+          Data.ddp.expectedUpdatesByCallId[callId].forEach(key => {
+            delete Data.ddp.expectedUpdates[key][callId];
+          });
+          delete Data.ddp.expectedUpdatesByCallId[callId];
+        }
+      });
+    });
+    /* END OPTIMISTIC-UI EDITS */
 
     Data.ddp.on("nosub", message => {
       for(var i in Data.subscriptions) {
